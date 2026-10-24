@@ -383,3 +383,15 @@ def get_analytics_summary(email: str = None):
             trades_res = supabase.table("trade_logs").select("*").eq("email", email.strip().lower()).execute()
         else:
             trades_res = supabase.table("trade_logs").select("*").execute()
+
+        trades = trades_res.data or []
+        metrics = calculate_performance_metrics(trades)
+
+        users_count_res = supabase.table("user_bot_profiles").select("email", count="exact").execute()
+        total_users = users_count_res.count if hasattr(users_count_res, 'count') else len(users_count_res.data or [])
+
+        metrics["total_platform_users"] = total_users
+        return {"status": "success", "metrics": metrics}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analytics calculation failed: {str(e)}")
