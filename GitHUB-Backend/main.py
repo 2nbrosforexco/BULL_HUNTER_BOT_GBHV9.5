@@ -43,9 +43,6 @@ active_bot_instances = {}
 active_bot_threads = {}
 active_connections: dict[str, WebSocket] = {}
 
-# Temporary In-memory OTP Store
-otp_store = {}
-
 # ------------------------------------------------------------------------------
 # 🛡️ HELPER FUNCTIONS (ENCRYPTION & METRICS)
 # ------------------------------------------------------------------------------
@@ -121,7 +118,6 @@ class VerifyOTPRequest(BaseModel):
     email: str
     otp: str
 
-# ✅ Nायदे App PIN Request Models
 class SetPinRequest(BaseModel):
     email: str
     pin: str  # 4 ya 6 digit PIN
@@ -160,7 +156,7 @@ async def websocket_bot_status(websocket: WebSocket, email: str):
         if email in active_connections:
             del active_connections[email]
 
-# 2️⃣ OTP Send Endpoint
+# 2️⃣ OTP Send Endpoint (Supabase Powered)
 @app.post("/api/auth/send-otp")
 def send_otp_endpoint(data: SendOTPRequest):
     email = data.email.strip().lower()
@@ -168,7 +164,18 @@ def send_otp_endpoint(data: SendOTPRequest):
         raise HTTPException(status_code=400, detail="Kripya ek valid email address enter karein.")
     
     otp = str(random.randint(100000, 999999))
-    otp_store[email] = otp
+    
+    if supabase:
+        try:
+            supabase.table("user_otps").upsert({
+                "email": email,
+                "otp": otp
+            }).execute()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Database error saving OTP: {str(e)}")
+    else:
+        raise HTTPException(status_code=500, detail="Supabase connection not initialized.")
+    
     print(f"[SECURE OTP DEBUG] Generated OTP for {email}: {otp}")
     
     return {
@@ -177,32 +184,43 @@ def send_otp_endpoint(data: SendOTPRequest):
         "debug_otp": otp
     }
 
-# 3️⃣ OTP Verify Endpoint
+# 3️⃣ OTP Verify Endpoint (Supabase Powered)
 @app.post("/api/auth/verify-otp")
 def verify_otp_endpoint(data: VerifyOTPRequest):
     email = data.email.strip().lower()
     user_otp = data.otp.strip()
     
-    saved_otp = otp_store.get(email)
-    if not saved_otp:
-        raise HTTPException(status_code=400, detail="OTP expire ho chuka hai ya email nahi mila.")
-    
-    if saved_otp != user_otp:
-        raise HTTPException(status_code=400, detail="Galat OTP enter kiya gaya hai.")
-    
-    del otp_store[email]
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database connection not initialized.")
+        
+    try:
+        res = supabase.table("user_otps").select("otp").eq("email", email).execute()
+        if not res.data or len(res.data) == 0:
+            raise HTTPException(status_code=400, detail="OTP expire ho chuka hai ya email nahi mila.")
+        
+        saved_otp = res.data[0].get("otp")
+        
+        if saved_otp != user_otp:
+            raise HTTPException(status_code=400, detail="Galat OTP enter kiya gaya hai.")
+        
+        # Verify hone ke baad OTP ko table se hata dein
+        supabase.table("user_otps").delete().eq("email", email).execute()
+        
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OTP verification error: {str(e)}")
     
     is_registered = False
     has_pin = False
-    if supabase:
-        try:
-            res = supabase.table("user_bot_profiles").select("email, app_pin_hash, coindcx_status").eq("email", email).execute()
-            if res.data and len(res.data) > 0:
-                is_registered = True
-                if res.data[0].get("app_pin_hash"):
-                    has_pin = True
-        except Exception as e:
-            print(f"Database lookup error: {str(e)}")
+    try:
+        profile_res = supabase.table("user_bot_profiles").select("email, app_pin_hash, coindcx_status").eq("email", email).execute()
+        if profile_res.data and len(profile_res.data) > 0:
+            is_registered = True
+            if profile_res.data[0].get("app_pin_hash"):
+                has_pin = True
+    except Exception as e:
+        print(f"Database lookup error: {str(e)}")
             
     return {
         "status": "success",
@@ -257,8 +275,6 @@ def register_user_credentials(data: UserRegistrationRequest):
         raise HTTPException(status_code=500, detail="Supabase connection not initialized.")
 
     try:
-        # Pre-flight API Handshake Validation Simulation (Real exchange test check)
-        # Agar API key ya secret ki length choti hai ya invalid format hai toh FAILED mark karein
         api_valid = len(data.coindcx_api_key.strip()) > 10 and len(data.coindcx_secret.strip()) > 10
         coindcx_status = "VERIFIED" if api_valid else "FAILED"
         error_msg = None if api_valid else "Invalid CoinDCX API Key or Secret format detected."
@@ -313,7 +329,6 @@ def control_user_bot(data: BotControlRequest):
 
             profile = res.data[0]
             
-            # 🛡️ SAFETY GATE: Check if CoinDCX API status is VERIFIED
             if profile.get("coindcx_status") != "VERIFIED":
                 raise HTTPException(
                     status_code=400, 
@@ -368,15 +383,3 @@ def get_analytics_summary(email: str = None):
             trades_res = supabase.table("trade_logs").select("*").eq("email", email.strip().lower()).execute()
         else:
             trades_res = supabase.table("trade_logs").select("*").execute()
-
-        trades = trades_res.data or []
-        metrics = calculate_performance_metrics(trades)
-
-        users_count_res = supabase.table("user_bot_profiles").select("email", count="exact").execute()
-        total_users = users_count_res.count if hasattr(users_count_res, 'count') else len(users_count_res.data or [])
-
-        metrics["total_platform_users"] = total_users
-        return {"status": "success", "metrics": metrics}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analytics calculation failed: {str(e)}")
