@@ -13,6 +13,9 @@ from pydantic import BaseModel
 from cryptography.fernet import Fernet
 from supabase import create_client, Client
 
+# Integration of Bull Hunter Quant Engine
+from trading_engine import DynamicBullHunterEngine
+
 # FastAPI App Initialization
 app = FastAPI(
     title="CDX Bull Hunter - Master SaaS Engine",
@@ -38,19 +41,26 @@ ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", Fernet.generate_key().decode())
 cipher = Fernet(ENCRYPTION_KEY.encode())
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL else None
 
-# Active bot threads, instances aur WebSocket connections track karne ke liye dictionaries
-active_bot_instances = {}
-active_bot_threads = {}
+# Active bot engine instances, threads & WebSocket connections tracking
+active_bot_instances: dict[str, DynamicBullHunterEngine] = {}
+active_bot_threads: dict[str, threading.Thread] = {}
 active_connections: dict[str, WebSocket] = {}
 
 # ------------------------------------------------------------------------------
 # 🛡️ HELPER FUNCTIONS (ENCRYPTION & METRICS)
 # ------------------------------------------------------------------------------
 def encrypt_val(value: str) -> str:
+    if not value:
+        return ""
     return cipher.encrypt(value.encode()).decode()
 
 def decrypt_val(encrypted_value: str) -> str:
-    return cipher.decrypt(encrypted_value.encode()).decode()
+    if not encrypted_value:
+        return ""
+    try:
+        return cipher.decrypt(encrypted_value.encode()).decode()
+    except Exception:
+        return encrypted_value  # Fallback if unencrypted
 
 def calculate_performance_metrics(trades_list: list, initial_balance: float = 200.0) -> dict:
     if not trades_list:
@@ -80,7 +90,7 @@ def calculate_performance_metrics(trades_list: list, initial_balance: float = 20
     drawdown = (eq_series - peak) / peak
     max_drawdown_pct = abs(float(drawdown.min())) * 100 if not drawdown.empty else 0.0
 
-    if total_trades > 1 and df['pnl'].std() > 0:
+    if total_trades > 1 and 'pnl' in df.columns and df['pnl'].std() > 0:
         mean_ret = df['pnl'].mean()
         std_ret = df['pnl'].std()
         sharpe_ratio = (mean_ret / std_ret) * np.sqrt(252)
@@ -120,7 +130,7 @@ class VerifyOTPRequest(BaseModel):
 
 class SetPinRequest(BaseModel):
     email: str
-    pin: str  # 4 ya 6 digit PIN
+    pin: str
 
 class VerifyPinRequest(BaseModel):
     email: str
@@ -142,21 +152,24 @@ def health_check():
 @app.websocket("/ws/bot-status/{email}")
 async def websocket_bot_status(websocket: WebSocket, email: str):
     await websocket.accept()
-    active_connections[email] = websocket
+    clean_email = email.strip().lower()
+    active_connections[clean_email] = websocket
     try:
         while True:
+            is_running = clean_email in active_bot_instances and active_bot_instances[clean_email].bot_running
             live_data = {
-                "status": "running" if email in active_bot_instances else "stopped",
+                "status": "running" if is_running else "stopped",
                 "message": "Live feed connected successfully",
-                "price": round(65000 + random.uniform(-50, 50), 2)
+                "balance": active_bot_instances[clean_email].balance if is_running else 0.0,
+                "timestamp": int(time.time())
             }
             await websocket.send_json(live_data)
             await asyncio.sleep(2)
     except WebSocketDisconnect:
-        if email in active_connections:
-            del active_connections[email]
+        if clean_email in active_connections:
+            del active_connections[clean_email]
 
-# 2️⃣ OTP Send Endpoint (Supabase Powered)
+# 2️⃣ OTP Send Endpoint
 @app.post("/api/auth/send-otp")
 def send_otp_endpoint(data: SendOTPRequest):
     email = data.email.strip().lower()
@@ -184,7 +197,7 @@ def send_otp_endpoint(data: SendOTPRequest):
         "debug_otp": otp
     }
 
-# 3️⃣ OTP Verify Endpoint (Supabase Powered)
+# 3️⃣ OTP Verify Endpoint
 @app.post("/api/auth/verify-otp")
 def verify_otp_endpoint(data: VerifyOTPRequest):
     email = data.email.strip().lower()
@@ -203,7 +216,6 @@ def verify_otp_endpoint(data: VerifyOTPRequest):
         if saved_otp != user_otp:
             raise HTTPException(status_code=400, detail="Galat OTP enter kiya gaya hai.")
         
-        # Verify hone ke baad OTP ko table se hata dein
         supabase.table("user_otps").delete().eq("email", email).execute()
         
     except HTTPException as he:
@@ -249,7 +261,7 @@ def set_app_pin(data: SetPinRequest):
     else:
         raise HTTPException(status_code=500, detail="Database connection error.")
 
-# 5️⃣ Verify App PIN Endpoint (Quick Login)
+# 5️⃣ Verify App PIN Endpoint
 @app.post("/api/auth/verify-pin")
 def verify_app_pin(data: VerifyPinRequest):
     email = data.email.strip().lower()
@@ -268,7 +280,7 @@ def verify_app_pin(data: VerifyPinRequest):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-# 6️⃣ User Registration with Pre-flight API Validation
+# 6️⃣ User Registration
 @app.post("/api/user/register")
 def register_user_credentials(data: UserRegistrationRequest):
     if not supabase:
@@ -312,14 +324,14 @@ def register_user_credentials(data: UserRegistrationRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
-# 7️⃣ Bot Execution Control (With API Verification Gate Check)
+# 7️⃣ Bot Execution Control (Starts/Stops Dynamic Quant Engine)
 @app.post("/api/bot/control")
 def control_user_bot(data: BotControlRequest):
     email = data.email.strip().lower()
     action = data.action.lower()
 
     if action == "start":
-        if email in active_bot_instances:
+        if email in active_bot_instances and active_bot_instances[email].bot_running:
             return {"status": "already_running", "message": "Bot aapke account par pehle se live run kar raha hai."}
 
         try:
@@ -337,15 +349,25 @@ def control_user_bot(data: BotControlRequest):
 
             raw_api_key = decrypt_val(profile["encrypted_coindcx_api_key"])
             raw_secret = decrypt_val(profile["encrypted_coindcx_secret"])
+            telegram_token = profile.get("telegram_token", "")
+            telegram_chat_id = profile.get("telegram_chat_id", "")
 
-            def _run_bot_thread():
-                pass
+            # Quant Engine Instantiate karein
+            engine = DynamicBullHunterEngine(
+                user_email=email,
+                api_key=raw_api_key,
+                api_secret=raw_secret,
+                telegram_token=telegram_token,
+                telegram_chat_id=telegram_chat_id,
+                supabase_client=supabase
+            )
 
-            t = threading.Thread(target=_run_bot_thread, daemon=True)
+            # Thread launch karein
+            t = threading.Thread(target=engine.run_loop, daemon=True)
+            active_bot_instances[email] = engine
             active_bot_threads[email] = t
             t.start()
 
-            active_bot_instances[email] = True
             supabase.table("user_bot_profiles").update({"is_bot_active": True}).eq("email", email).execute()
 
             return {
@@ -360,6 +382,7 @@ def control_user_bot(data: BotControlRequest):
 
     elif action == "stop":
         if email in active_bot_instances:
+            active_bot_instances[email].stop()
             del active_bot_instances[email]
         if email in active_bot_threads:
             del active_bot_threads[email]
@@ -372,7 +395,37 @@ def control_user_bot(data: BotControlRequest):
     else:
         raise HTTPException(status_code=400, detail="Invalid action. Use 'start' or 'stop'.")
 
-# 8️⃣ Analytics Summary Endpoint
+# 8️⃣ Bot Status & Live Positions Endpoint
+@app.get("/api/bot/status")
+def get_bot_status(email: str):
+    clean_email = email.strip().lower()
+    is_running = clean_email in active_bot_instances and active_bot_instances[clean_email].bot_running
+    balance = 0.0
+    active_positions = []
+
+    if is_running:
+        engine = active_bot_instances[clean_email]
+        balance = engine.balance
+        with engine.state_lock:
+            for sym, st in engine.states.items():
+                if st['position'] is not None:
+                    active_positions.append({
+                        "symbol": sym,
+                        "position": st['position'],
+                        "entry_price": st['entry_price'],
+                        "current_price": st['last_price'],
+                        "size": st['position_size'],
+                        "pnl": round((st['last_price'] - st['entry_price']) * st['position_size'] if st['position'] == 'BUY' else (st['entry_price'] - st['last_price']) * st['position_size'], 2)
+                    })
+
+    return {
+        "status": "success",
+        "is_active": is_running,
+        "balance": round(balance, 2),
+        "active_positions": active_positions
+    }
+
+# 9️⃣ Analytics Summary Endpoint
 @app.get("/api/analytics/summary")
 def get_analytics_summary(email: str = None):
     if not supabase:
