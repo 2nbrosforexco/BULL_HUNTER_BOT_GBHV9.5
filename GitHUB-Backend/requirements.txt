@@ -10,3 +10,5 @@ numpy>=2.0.0
 python-dotenv>=1.0.1
 cryptography>=42.0.0
 python-socketio>=5.11.1
+gTTS
+playsound
