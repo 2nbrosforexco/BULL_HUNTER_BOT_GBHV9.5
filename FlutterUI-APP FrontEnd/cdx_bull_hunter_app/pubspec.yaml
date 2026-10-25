@@ -17,9 +17,12 @@ dependencies:
   # WebSocket package for real-time live data feeds
   web_socket_channel: ^2.4.0
   
-  # Local storage for user registration & persistent session
+  # Local storage for user registration & persistent session (Stage 1 crucial package)
   shared_preferences: ^2.2.2
   
+  # 📈 Equity Growth Charts ke liye zaroori package (Stage 3)
+  fl_chart: ^0.68.0
+
   # WebView package for TradingView charts integration
   webview_flutter: ^4.4.4
   

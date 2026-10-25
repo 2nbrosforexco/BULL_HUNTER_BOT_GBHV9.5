@@ -1,37 +1,37 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
-import 'package:webview_flutter_web/webview_flutter_web.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'screens/login_screen.dart';
+import 'screens/pin_login_screen.dart'; // सीधे पिन स्क्रीन पर जाने के लिए
 
-// ✅ Dashboard ki jagah ab RegisterScreen ko import karein
-import 'screens/register_screen.dart'; 
-
-void main() {
+void main() async {
+  // Flutter bindings ensure karne ke liye
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ✅ Web platform ke liye WebView instance yahan set karein
-  if (kIsWeb) {
-    WebViewPlatform.instance = WebWebViewPlatform();
-  }
+  // Local storage se check karein ki kya user pehle se logged-in hai (saved email)
+  SharedPreferences prefs = await SharedPreferences.getInstance();
+  String? savedEmail = prefs.getString('logged_in_email');
 
-  runApp(const MyApp());
+  runApp(BullHunterApp(savedEmail: savedEmail));
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({Key? key}) : super(key: key);
+class BullHunterApp extends StatelessWidget {
+  final String? savedEmail;
+  const BullHunterApp({Key? key, this.savedEmail}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'CDX Bull Hunter Bot',
+      title: 'Bull Hunter Bot',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF0A0F1D),
         primarySwatch: Colors.cyan,
+        scaffoldBackgroundColor: const Color(0xFF0A0F1D),
+        brightness: Brightness.dark,
       ),
-      // ✅ App khulte hi RegisterScreen load hogi jo purane session ko check karegi
-      home: const RegisterScreen(), 
+      // Smart Routing: Agar email saved hai toh PinLoginScreen, warna LoginScreen
+      home: savedEmail != null && savedEmail!.isNotEmpty
+          ? PinLoginScreen(email: savedEmail!)
+          : const LoginScreen(),
     );
   }
 }
