@@ -22,7 +22,7 @@ from trading_engine import DynamicBullHunterEngine
 # FastAPI App Initialization
 app = FastAPI(
     title="CDX Bull Hunter - Master SaaS Engine",
-    version="9.6.4"
+    version="9.6.5"
 )
 
 # CORS Tolerance (Flutter Web/Cross-platform access ke liye)
@@ -173,7 +173,7 @@ class VerifyPinRequest(BaseModel):
 def health_check():
     return {
         "status": "online",
-        "engine": "CDX Bull Hunter - Master SaaS Engine Level 9.6.4 (Secured + Email OTP)",
+        "engine": "CDX Bull Hunter - Master SaaS Engine Level 9.6.5 (Secured + Last Known Balance)",
         "active_users_running": len(active_bot_instances)
     }
 
@@ -198,7 +198,7 @@ async def websocket_bot_status(websocket: WebSocket, email: str):
         if clean_email in active_connections:
             del active_connections[clean_email]
 
-# 2️⃣ OTP Send Endpoint (Integrated with Real SMTP Email)
+# 2️⃣ OTP Send Endpoint
 @app.post("/api/auth/send-otp")
 def send_otp_endpoint(data: SendOTPRequest):
     email = data.email.strip().lower()
@@ -218,7 +218,6 @@ def send_otp_endpoint(data: SendOTPRequest):
     else:
         raise HTTPException(status_code=500, detail="Supabase connection not initialized.")
     
-    # Send Real Email via SMTP
     email_dispatched = send_email_otp_smtp(email, otp)
     
     return {
@@ -478,6 +477,16 @@ def get_bot_status(email: str):
     if is_running:
         engine = active_bot_instances[clean_email]
         balance = engine.balance
+        
+        # Save latest balance to Supabase column 'last_known_balance' automatically
+        if supabase:
+            try:
+                supabase.table("user_bot_profiles").update({
+                    "last_known_balance": str(round(balance, 2))
+                }).eq("email", clean_email).execute()
+            except Exception as e:
+                print(f"Error saving last known balance: {str(e)}")
+
         with engine.state_lock:
             for sym, st in engine.states.items():
                 if st['position'] is not None:
@@ -497,11 +506,12 @@ def get_bot_status(email: str):
         "active_positions": active_positions
     }
 
-# 9️⃣ Master Engine & Offline Direct Fallback Wallet & PnL Endpoint
+# 9️⃣ Master Engine & Supabase Last Known Balance Fallback Endpoint
 @app.get("/api/wallet/balance")
 async def get_wallet_balance(email: str = Query(...)):
     clean_email = email.strip().lower()
     try:
+        # 1. Agar bot active run kar raha hai, toh seedha engine se live balance lo
         if clean_email in active_bot_instances:
             engine_instance = active_bot_instances[clean_email]
             if hasattr(engine_instance, "get_live_wallet_summary"):
@@ -515,6 +525,15 @@ async def get_wallet_balance(email: str = Query(...)):
             total_margin = engine_wallet.get('total_margin', 0.0)
             unrealized_pnl = engine_wallet.get('unrealized_pnl', 0.0)
             
+            # Supabase mein bhi update kar do
+            if supabase:
+                try:
+                    supabase.table("user_bot_profiles").update({
+                        "last_known_balance": str(round(total_margin, 2))
+                    }).eq("email", clean_email).execute()
+                except Exception:
+                    pass
+
             return {
                 "status": "success",
                 "wallet": {
@@ -524,24 +543,23 @@ async def get_wallet_balance(email: str = Query(...)):
                 }
             }
         
+        # 2. Agar bot offline hai, toh Supabase ke 'last_known_balance' column se real balance fetch karo
         if supabase:
-            profile_res = supabase.table("user_bot_profiles").select("encrypted_coindcx_api_key, encrypted_coindcx_secret").eq("email", clean_email).execute()
+            profile_res = supabase.table("user_bot_profiles").select("last_known_balance").eq("email", clean_email).execute()
             
             if profile_res.data and len(profile_res.data) > 0:
-                profile = profile_res.data[0]
-                enc_api = profile.get("encrypted_coindcx_api_key")
-                enc_sec = profile.get("encrypted_coindcx_secret")
-                
-                if enc_api and enc_sec:
+                db_balance = profile_res.data[0].get("last_known_balance")
+                if db_balance is not None:
                     return {
                         "status": "success",
                         "wallet": {
-                            "total_balance": "2,450.00",
+                            "total_balance": f"{float(db_balance):,.2f}",
                             "current_pnl": "+$0.00",
                             "pnl_is_positive": True
                         }
                     }
         
+        # Agar koi record nahi milta
         return {
             "status": "success",
             "wallet": {
