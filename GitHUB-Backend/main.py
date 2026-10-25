@@ -19,16 +19,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Map<String, dynamic> _metrics = {};
   bool _isLoadingMetrics = true;
 
-  // 💰 वॉलेट और लाइव पीएनएल के लिए स्टेट्स
+  // वॉलेट और लाइव पीएनएल के लिए स्टेट्स
   Map<String, dynamic> _walletData = {};
   bool _isLoadingWallet = true;
 
-  // 📈 लाइव ओपन पोजीशंस के लिए स्टेट्स
+  // लाइव ओपन पोजीशंस के लिए स्टेट्स
   List<dynamic> _openPositions = [];
   bool _isLoadingPositions = true;
   Timer? _pollingTimer;
 
-  // 🔊 Sound Toggle State (Stage 5)
+  // Sound Toggle State (Stage 5)
   bool _soundAlertsEnabled = true;
 
   final String baseUrl = "https://bull-hunter-bot-gbhv9-5.onrender.com";
@@ -130,7 +130,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  // 📈 Open Positions Fetching
+  // Open Positions Fetching
   Future<void> _fetchOpenPositions() async {
     try {
       final response = await http.get(
@@ -170,7 +170,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  // 💰 Live Wallet Balance Fetch
+  // Live Wallet Balance Fetch
   Future<void> _fetchWalletBalance() async {
     try {
       final response = await http.get(
@@ -192,7 +192,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  // 📊 Analytics & Metrics Fetching
+  // Analytics & Metrics Fetching
   Future<void> _fetchAnalytics() async {
     try {
       final response = await http.get(
@@ -214,7 +214,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  // 🤖 Bot Start / Stop Execution Control
+  // Bot Start / Stop Execution Control
   Future<void> _toggleBot(String action) async {
     setState(() => _isLoadingControl = true);
     try {
@@ -258,7 +258,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  // 🛡️ Emergency PIN Verification Dialog Popup (Stage 4)
+  // Emergency PIN Verification Dialog Popup (Stage 4)
   void _showEmergencyPinDialog() {
     final TextEditingController pinController = TextEditingController();
     bool isSubmittingPin = false;
@@ -459,7 +459,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           const SizedBox(height: 15),
 
-          // 💰 1. Live Wallet Balance & Current PnL Card
+          // 1. Live Wallet Balance & Current PnL Card
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
@@ -523,7 +523,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
           const SizedBox(height: 20),
 
-          // 📈 2. Live Open Positions Card (Stage 2)
+          // 2. Live Open Positions Card (Stage 2)
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
@@ -636,7 +636,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
           const SizedBox(height: 20),
 
-          // 📊 3. Portfolio Equity Growth Chart Widget (Stage 3)
+          // 3. Portfolio Equity Growth Chart Widget (Stage 3)
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
@@ -820,7 +820,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             const SizedBox(height: 20),
             
-            // 🛑 EMERGENCY PANIC BUTTON (Stage 4)
+            // EMERGENCY PANIC BUTTON (Stage 4)
             SizedBox(
               width: double.infinity,
               height: 55,
@@ -848,7 +848,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
             const SizedBox(height: 25),
 
-            // 🔊 SOUND ALERTS TOGGLE SWITCH (Stage 5)
+            // SOUND ALERTS TOGGLE SWITCH (Stage 5)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: BoxDecoration(
