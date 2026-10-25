@@ -5,6 +5,8 @@ import threading
 import asyncio
 import random
 import hashlib
+import smtplib
+from email.mime.text import MIMEText
 from datetime import datetime, timezone, timedelta
 import numpy as np
 import pandas as pd
@@ -20,7 +22,7 @@ from trading_engine import DynamicBullHunterEngine
 # FastAPI App Initialization
 app = FastAPI(
     title="CDX Bull Hunter - Master SaaS Engine",
-    version="9.6.3"
+    version="9.6.4"
 )
 
 # CORS Tolerance (Flutter Web/Cross-platform access ke liye)
@@ -107,6 +109,32 @@ def calculate_performance_metrics(trades_list: list, initial_balance: float = 20
     }
 
 # ------------------------------------------------------------------------------
+# 📧 REAL EMAIL SMTP DISPATCHER FUNCTION
+# ------------------------------------------------------------------------------
+def send_email_otp_smtp(to_email: str, otp: str):
+    sender_email = os.getenv("SMTP_EMAIL", "")
+    sender_password = os.getenv("SMTP_PASSWORD", "")
+    
+    if not sender_email or not sender_password:
+        print(f"[EMAIL MOCK] SMTP credentials missing. OTP for {to_email}: {otp}")
+        return False
+
+    msg = MIMEText(f"Aapka Bull Hunter SaaS login OTP hai: {otp}\nYeh OTP 5 minute mein expire ho jayega. Kripya ise kisi ke sath share na karein.")
+    msg['Subject'] = 'Bull Hunter SaaS - Login OTP Verification'
+    msg['From'] = sender_email
+    msg['To'] = to_email
+
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, to_email, msg.as_string())
+        print(f"OTP email successfully sent to {to_email}")
+        return True
+    except Exception as e:
+        print(f"Email sending failed: {str(e)}")
+        return False
+
+# ------------------------------------------------------------------------------
 # 📦 REQUEST MODELS
 # ------------------------------------------------------------------------------
 class UserRegistrationRequest(BaseModel):
@@ -145,7 +173,7 @@ class VerifyPinRequest(BaseModel):
 def health_check():
     return {
         "status": "online",
-        "engine": "CDX Bull Hunter - Master SaaS Engine Level 9.6.3 (Secured)",
+        "engine": "CDX Bull Hunter - Master SaaS Engine Level 9.6.4 (Secured + Email OTP)",
         "active_users_running": len(active_bot_instances)
     }
 
@@ -170,7 +198,7 @@ async def websocket_bot_status(websocket: WebSocket, email: str):
         if clean_email in active_connections:
             del active_connections[clean_email]
 
-# 2️⃣ OTP Send Endpoint
+# 2️⃣ OTP Send Endpoint (Integrated with Real SMTP Email)
 @app.post("/api/auth/send-otp")
 def send_otp_endpoint(data: SendOTPRequest):
     email = data.email.strip().lower()
@@ -190,9 +218,13 @@ def send_otp_endpoint(data: SendOTPRequest):
     else:
         raise HTTPException(status_code=500, detail="Supabase connection not initialized.")
     
+    # Send Real Email via SMTP
+    email_dispatched = send_email_otp_smtp(email, otp)
+    
     return {
         "status": "success",
         "message": f"OTP successfully sent to {email}",
+        "email_dispatched": email_dispatched,
         "debug_otp": otp
     }
 
@@ -465,12 +497,11 @@ def get_bot_status(email: str):
         "active_positions": active_positions
     }
 
-# 9️⃣ Master Engine & Offline Direct Fallback Wallet & PnL Endpoint (Option B Integrated)
+# 9️⃣ Master Engine & Offline Direct Fallback Wallet & PnL Endpoint
 @app.get("/api/wallet/balance")
 async def get_wallet_balance(email: str = Query(...)):
     clean_email = email.strip().lower()
     try:
-        # 1. Pehle check karein kya active engine chal raha hai
         if clean_email in active_bot_instances:
             engine_instance = active_bot_instances[clean_email]
             if hasattr(engine_instance, "get_live_wallet_summary"):
@@ -493,7 +524,6 @@ async def get_wallet_balance(email: str = Query(...)):
                 }
             }
         
-        # 2. Agar bot offline hai, toh Supabase se credentials nikal kar balance fetch karein (Option B Fallback)
         if supabase:
             profile_res = supabase.table("user_bot_profiles").select("encrypted_coindcx_api_key, encrypted_coindcx_secret").eq("email", clean_email).execute()
             
@@ -503,17 +533,15 @@ async def get_wallet_balance(email: str = Query(...)):
                 enc_sec = profile.get("encrypted_coindcx_secret")
                 
                 if enc_api and enc_sec:
-                    # Yahan user ke paas keys available hain, offline hone par bhi live/saved balance return karega
                     return {
                         "status": "success",
                         "wallet": {
-                            "total_balance": "2,450.00",  # Live fetched or fallback active balance when bot is offline
+                            "total_balance": "2,450.00",
                             "current_pnl": "+$0.00",
                             "pnl_is_positive": True
                         }
                     }
         
-        # Agar koi profile nahi milti
         return {
             "status": "success",
             "wallet": {
