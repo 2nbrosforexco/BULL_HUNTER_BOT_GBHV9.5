@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:fl_chart/fl_chart.dart'; // 📈 fl_chart package for Equity Charts (Stage 3)
+import 'package:fl_chart/fl_chart.dart'; // fl_chart package for Equity Charts (Stage 3)
 
 class DashboardScreen extends StatefulWidget {
   final String userEmail;
