@@ -5,6 +5,7 @@ import threading
 import asyncio
 import random
 import hashlib
+from datetime import datetime, timezone, timedelta
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect
@@ -19,7 +20,7 @@ from trading_engine import DynamicBullHunterEngine
 # FastAPI App Initialization
 app = FastAPI(
     title="CDX Bull Hunter - Master SaaS Engine",
-    version="9.6.0"
+    version="9.6.1"
 )
 
 # CORS Tolerance (Flutter Web/Cross-platform access ke liye)
@@ -144,7 +145,7 @@ class VerifyPinRequest(BaseModel):
 def health_check():
     return {
         "status": "online",
-        "engine": "Bull Hunter Quant SaaS Engine Level 9.6 (Secured)",
+        "engine": "Bull Hunter Quant SaaS Engine Level 9.6.1 (Secured)",
         "active_users_running": len(active_bot_instances)
     }
 
@@ -253,7 +254,10 @@ def set_app_pin(data: SetPinRequest):
     if supabase:
         try:
             supabase.table("user_bot_profiles").update({
-                "app_pin_hash": pin_hash
+                "app_pin_hash": pin_hash,
+                "failed_pin_attempts": 0,
+                "pin_locked_until": None,
+                "updated_at": datetime.now(timezone.utc).isoformat()
             }).eq("email", email).execute()
             return {"status": "success", "message": "App PIN successfully set!"}
         except Exception as e:
@@ -261,24 +265,71 @@ def set_app_pin(data: SetPinRequest):
     else:
         raise HTTPException(status_code=500, detail="Database connection error.")
 
-# 5️⃣ Verify App PIN Endpoint
+# 5️⃣ Verify App PIN Endpoint (With Brute-Force & Lockout Protection)
 @app.post("/api/auth/verify-pin")
 def verify_app_pin(data: VerifyPinRequest):
     email = data.email.strip().lower()
     input_hash = hashlib.sha256(data.pin.encode()).hexdigest()
     
-    if supabase:
-        try:
-            res = supabase.table("user_bot_profiles").select("app_pin_hash").eq("email", email).execute()
-            if not res.data or not res.data[0].get("app_pin_hash"):
-                raise HTTPException(status_code=404, detail="PIN set nahi hai. Kripya OTP se login karein.")
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database connection error.")
+
+    try:
+        res = supabase.table("user_bot_profiles").select("app_pin_hash, failed_pin_attempts, pin_locked_until").eq("email", email).execute()
+        if not res.data or not res.data[0].get("app_pin_hash"):
+            raise HTTPException(status_code=404, detail="PIN set nahi hai. Kripya OTP se login karein.")
+        
+        user_record = res.data[0]
+        locked_until = user_record.get("pin_locked_until")
+
+        # Check if account is temporarily locked
+        if locked_until:
+            lock_time = datetime.fromisoformat(locked_until.replace('Z', '+00:00'))
+            if datetime.now(timezone.utc) < lock_time:
+                remaining_mins = int((lock_time - datetime.now(timezone.utc)).total_seconds() / 60) + 1
+                raise HTTPException(
+                    status_code=403, 
+                    detail=f"Account temporarily locked due to multiple failed PIN attempts. Try again in {remaining_mins} minutes."
+                )
+
+        stored_hash = user_record.get("app_pin_hash")
+        failed_attempts = user_record.get("failed_pin_attempts", 0) or 0
+
+        if stored_hash == input_hash:
+            # Reset failed attempts on successful login
+            if failed_attempts > 0:
+                supabase.table("user_bot_profiles").update({
+                    "failed_pin_attempts": 0,
+                    "pin_locked_until": None
+                }).eq("email", email).execute()
+
+            return {"status": "success", "message": "PIN verified successfully!"}
+        else:
+            # Increment failed attempts
+            new_attempts = failed_attempts + 1
+            update_data = {"failed_pin_attempts": new_attempts}
+
+            # Lock account for 15 minutes if attempts reach 5
+            if new_attempts >= 5:
+                lockout_time = datetime.now(timezone.utc) + timedelta(minutes=15)
+                update_data["pin_locked_until"] = lockout_time.isoformat()
+                supabase.table("user_bot_profiles").update(update_data).eq("email", email).execute()
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Too many incorrect PIN attempts. Account locked for 15 minutes."
+                )
             
-            if res.data[0]["app_pin_hash"] == input_hash:
-                return {"status": "success", "message": "PIN verified successfully!"}
-            
-            raise HTTPException(status_code=400, detail="Galat PIN enter kiya gaya hai.")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            supabase.table("user_bot_profiles").update(update_data).eq("email", email).execute()
+            remaining_tries = 5 - new_attempts
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Galat PIN enter kiya gaya hai. {remaining_tries} attempts remaining."
+            )
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # 6️⃣ User Registration
 @app.post("/api/user/register")
@@ -306,7 +357,8 @@ def register_user_credentials(data: UserRegistrationRequest):
             "telegram_chat_id": data.telegram_chat_id,
             "telegram_status": "VERIFIED" if data.telegram_token else "PENDING",
             "last_error_message": error_msg,
-            "is_bot_active": False
+            "is_bot_active": False,
+            "updated_at": datetime.now(timezone.utc).isoformat()
         }
 
         supabase.table("user_bot_profiles").upsert(user_data, on_conflict="email").execute()
