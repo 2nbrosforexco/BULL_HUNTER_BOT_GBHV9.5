@@ -8,7 +8,7 @@ import hashlib
 from datetime import datetime, timezone, timedelta
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from cryptography.fernet import Fernet
@@ -20,7 +20,7 @@ from trading_engine import DynamicBullHunterEngine
 # FastAPI App Initialization
 app = FastAPI(
     title="CDX Bull Hunter - Master SaaS Engine",
-    version="9.6.1"
+    version="9.6.2"
 )
 
 # CORS Tolerance (Flutter Web/Cross-platform access ke liye)
@@ -145,7 +145,7 @@ class VerifyPinRequest(BaseModel):
 def health_check():
     return {
         "status": "online",
-        "engine": "Bull Hunter Quant SaaS Engine Level 9.6.1 (Secured)",
+        "engine": "CDX Bull Hunter - Master SaaS Engine Level 9.6.2 (Secured)",
         "active_users_running": len(active_bot_instances)
     }
 
@@ -190,8 +190,6 @@ def send_otp_endpoint(data: SendOTPRequest):
     else:
         raise HTTPException(status_code=500, detail="Supabase connection not initialized.")
     
-    print(f"[SECURE OTP DEBUG] Generated OTP for {email}: {otp}")
-    
     return {
         "status": "success",
         "message": f"OTP successfully sent to {email}",
@@ -213,12 +211,10 @@ def verify_otp_endpoint(data: VerifyOTPRequest):
             raise HTTPException(status_code=400, detail="OTP expire ho chuka hai ya email nahi mila.")
         
         saved_otp = res.data[0].get("otp")
-        
         if saved_otp != user_otp:
             raise HTTPException(status_code=400, detail="Galat OTP enter kiya gaya hai.")
         
         supabase.table("user_otps").delete().eq("email", email).execute()
-        
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -265,7 +261,7 @@ def set_app_pin(data: SetPinRequest):
     else:
         raise HTTPException(status_code=500, detail="Database connection error.")
 
-# 5️⃣ Verify App PIN Endpoint (With Brute-Force & Lockout Protection)
+# 5️⃣ Verify App PIN Endpoint
 @app.post("/api/auth/verify-pin")
 def verify_app_pin(data: VerifyPinRequest):
     email = data.email.strip().lower()
@@ -282,7 +278,6 @@ def verify_app_pin(data: VerifyPinRequest):
         user_record = res.data[0]
         locked_until = user_record.get("pin_locked_until")
 
-        # Check if account is temporarily locked
         if locked_until:
             lock_time = datetime.fromisoformat(locked_until.replace('Z', '+00:00'))
             if datetime.now(timezone.utc) < lock_time:
@@ -296,7 +291,6 @@ def verify_app_pin(data: VerifyPinRequest):
         failed_attempts = user_record.get("failed_pin_attempts", 0) or 0
 
         if stored_hash == input_hash:
-            # Reset failed attempts on successful login
             if failed_attempts > 0:
                 supabase.table("user_bot_profiles").update({
                     "failed_pin_attempts": 0,
@@ -305,11 +299,9 @@ def verify_app_pin(data: VerifyPinRequest):
 
             return {"status": "success", "message": "PIN verified successfully!"}
         else:
-            # Increment failed attempts
             new_attempts = failed_attempts + 1
             update_data = {"failed_pin_attempts": new_attempts}
 
-            # Lock account for 15 minutes if attempts reach 5
             if new_attempts >= 5:
                 lockout_time = datetime.now(timezone.utc) + timedelta(minutes=15)
                 update_data["pin_locked_until"] = lockout_time.isoformat()
@@ -325,7 +317,6 @@ def verify_app_pin(data: VerifyPinRequest):
                 status_code=400, 
                 detail=f"Galat PIN enter kiya gaya hai. {remaining_tries} attempts remaining."
             )
-
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -376,7 +367,7 @@ def register_user_credentials(data: UserRegistrationRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
-# 7️⃣ Bot Execution Control (Starts/Stops Dynamic Quant Engine)
+# 7️⃣ Bot Execution Control
 @app.post("/api/bot/control")
 def control_user_bot(data: BotControlRequest):
     email = data.email.strip().lower()
@@ -404,7 +395,6 @@ def control_user_bot(data: BotControlRequest):
             telegram_token = profile.get("telegram_token", "")
             telegram_chat_id = profile.get("telegram_chat_id", "")
 
-            # Quant Engine Instantiate karein
             engine = DynamicBullHunterEngine(
                 user_email=email,
                 api_key=raw_api_key,
@@ -414,7 +404,6 @@ def control_user_bot(data: BotControlRequest):
                 supabase_client=supabase
             )
 
-            # Thread launch karein
             t = threading.Thread(target=engine.run_loop, daemon=True)
             active_bot_instances[email] = engine
             active_bot_threads[email] = t
@@ -426,7 +415,6 @@ def control_user_bot(data: BotControlRequest):
                 "status": "success",
                 "message": "Bot safaltapurvak start ho gaya hai aur CoinDCX ke sath securely connected hai!"
             }
-
         except HTTPException as he:
             raise he
         except Exception as e:
@@ -477,7 +465,58 @@ def get_bot_status(email: str):
         "active_positions": active_positions
     }
 
-# 9️⃣ Analytics Summary Endpoint
+# 9️⃣ Master Engine Live Wallet & PnL Endpoint (Integrated)
+@app.get("/api/wallet/balance")
+async def get_wallet_balance(email: str = Query(...)):
+    clean_email = email.strip().lower()
+    try:
+        if clean_email in active_bot_instances:
+            engine_instance = active_bot_instances[clean_email]
+            
+            # Master Engine ke live wallet summary method ko call karna
+            if hasattr(engine_instance, "get_live_wallet_summary"):
+                engine_wallet = engine_instance.get_live_wallet_summary()
+            else:
+                # Fallback dictionary agar method engine mein direct ho
+                engine_wallet = {
+                    "total_margin": getattr(engine_instance, "balance", 0.0),
+                    "unrealized_pnl": 0.0
+                }
+            
+            total_margin = engine_wallet.get('total_margin', 0.0)
+            unrealized_pnl = engine_wallet.get('unrealized_pnl', 0.0)
+            
+            return {
+                "status": "success",
+                "wallet": {
+                    "total_balance": f"{total_margin:,.2f}",
+                    "current_pnl": f"{unrealized_pnl:+,.2f}",
+                    "pnl_is_positive": unrealized_pnl >= 0
+                }
+            }
+        else:
+            # Agar bot offline hai toh Supabase profile se last known balance fetch karein
+            if supabase:
+                profile_res = supabase.table("user_bot_profiles").select("last_known_balance").eq("email", clean_email).execute()
+                last_balance = "0.00"
+                if profile_res.data and len(profile_res.data) > 0:
+                    last_balance = str(profile_res.data[0].get("last_known_balance", "0.00"))
+            else:
+                last_balance = "0.00"
+                
+            return {
+                "status": "success",
+                "wallet": {
+                    "total_balance": f"{last_balance} (Bot Offline)",
+                    "current_pnl": "+$0.00",
+                    "pnl_is_positive": True
+                }
+            }
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Engine wallet sync error: {str(e)}")
+
+# 🔟 Analytics Summary Endpoint
 @app.get("/api/analytics/summary")
 def get_analytics_summary(email: str = None):
     if not supabase:
