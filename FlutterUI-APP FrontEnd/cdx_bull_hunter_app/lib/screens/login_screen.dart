@@ -1,7 +1,8 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'otp_verification_screen.dart'; // अगला स्टेप (OTP स्क्रीन)
+import 'otp_verification_screen.dart';
+import 'pin_verification_screen.dart'; // Ensure karein ki ye screen imported ho
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({Key? key}) : super(key: key);
@@ -14,12 +15,11 @@ class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _emailController = TextEditingController();
   bool _isLoading = false;
 
-  // आपका लाइव रेंडर बैकएंड URL
   final String baseUrl = "https://bull-hunter-bot-gbhv9-5.onrender.com";
 
-  // OTP भेजने का फंक्शन
-  Future<void> _sendOtp() async {
-    final email = _emailController.text.trim();
+  // 🔍 Email check karne aur conditional routing ka main function
+  Future<void> _checkUserAndProceed() async {
+    final email = _emailController.text.trim().toLowerCase();
     if (email.isEmpty || !email.contains('@')) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('कृपया एक वैध ईमेल एड्रेस दर्ज करें'), backgroundColor: Colors.red),
@@ -30,6 +30,55 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = true);
 
     try {
+      // Backend se check karein ki user pehle se registered hai ya nahi
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/auth/check-status?email=$email'),
+        headers: {'Content-Type': 'application/json'},
+      );
+
+      debugPrint("Check Status Response Code: ${response.statusCode}");
+      debugPrint("Check Status Response Body: ${response.body}");
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        bool isRegistered = data['is_registered'] ?? false;
+        bool hasPin = data['has_pin'] ?? false;
+
+        if (!mounted) return;
+
+        if (isRegistered && hasPin) {
+          // Agar user registered hai aur PIN set hai, toh seedha PIN screen par bhein
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PinVerificationScreen(email: email),
+            ),
+          );
+        } else {
+          // Agar naya user hai, toh OTP generate karke OTP screen par bhein
+          await _sendOtp(email);
+        }
+      } else {
+        // Agar backend error de, toh user ko alert dikhayein ya debug karein
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('यूजर स्टेटस जाँचने में विफल (Code: ${response.statusCode})'), backgroundColor: Colors.orange),
+        );
+      }
+    } catch (e) {
+      debugPrint("Login Check Error: $e");
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('कनेक्शन त्रुटि: ${e.toString()}'), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // 📤 OTP bhejne ka helper function
+  Future<void> _sendOtp(String email) async {
+    try {
       final response = await http.post(
         Uri.parse('$baseUrl/api/auth/send-otp'),
         headers: {'Content-Type': 'application/json'},
@@ -38,13 +87,13 @@ class _LoginScreenState extends State<LoginScreen> {
 
       final data = jsonDecode(response.body);
 
+      if (!mounted) return;
+
       if (response.statusCode == 200) {
-        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(data['message'] ?? 'OTP भेजा गया!'), backgroundColor: Colors.green),
         );
 
-        // OTP स्क्रीन पर रीडायरेक्ट करें
         Navigator.push(
           context,
           MaterialPageRoute(
@@ -55,12 +104,9 @@ class _LoginScreenState extends State<LoginScreen> {
         throw Exception(data['detail'] ?? 'OTP भेजने में विफल');
       }
     } catch (e) {
-      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error: ${e.toString()}'), backgroundColor: Colors.red),
       );
-    } finally {
-      setState(() => _isLoading = false);
     }
   }
 
@@ -69,14 +115,13 @@ class _LoginScreenState extends State<LoginScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          // 1. बैकग्राउंड थीम इमेज या ग्रेडिएंट लेयर (আপনার YouTube चैनल और बोट थीम के अनुसार)
           Container(
             decoration: const BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  Color(0xFF0A0F1D), // डार्क थीम बेस
+                  Color(0xFF0A0F1D),
                   Color(0xFF1E293B),
                   Color(0xFF0F172A),
                 ],
@@ -84,9 +129,9 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
             child: Center(
               child: Opacity(
-                opacity: 0.15, // इमेज को बैकग्राउंड में वाटरमार्क जैसा दिखाने के लिए
+                opacity: 0.15,
                 child: Image.asset(
-                  'assets/images/bot_bg_theme.png', // यहाँ आपके बोट/YouTube लोगो वाली इमेज आएगी
+                  'assets/images/bot_bg_theme.png',
                   fit: BoxFit.cover,
                   width: double.infinity,
                   height: double.infinity,
@@ -95,8 +140,6 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             ),
           ),
-
-          // 2. फ्रंट UI कंटेंट्स
           SafeArea(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(24.0),
@@ -104,7 +147,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   const SizedBox(height: 40),
-                  // बोट और YouTube चैनल की ब्रांडिंग हेडर्स
                   const CircleAvatar(
                     radius: 45,
                     backgroundColor: Colors.cyanAccent,
@@ -126,8 +168,6 @@ class _LoginScreenState extends State<LoginScreen> {
                     style: TextStyle(color: Colors.white60, fontSize: 13),
                   ),
                   const SizedBox(height: 60),
-
-                  // ईमेल इनपुट कार्ड
                   Container(
                     padding: const EdgeInsets.all(20),
                     decoration: BoxDecoration(
@@ -168,7 +208,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           width: double.infinity,
                           height: 50,
                           child: ElevatedButton(
-                            onPressed: _isLoading ? null : _sendOtp,
+                            onPressed: _isLoading ? null : _checkUserAndProceed,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.cyanAccent,
                               foregroundColor: Colors.black,
@@ -179,7 +219,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             child: _isLoading
                                 ? const CircularProgressIndicator(color: Colors.black)
                                 : const Text(
-                                    'GET OTP / CONTINUE',
+                                    'CONTINUE',
                                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                                   ),
                           ),

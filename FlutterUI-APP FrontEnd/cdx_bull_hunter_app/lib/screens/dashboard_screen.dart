@@ -2,7 +2,9 @@ import 'dart:convert';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:fl_chart/fl_chart.dart'; // 📈 fl_chart package for Equity Charts (Stage 3)
+import 'package:fl_chart/fl_chart.dart'; // 📈 fl_chart package for Dynamic Equity Growth Chart
+import 'package:shared_preferences/shared_preferences.dart'; // 🚪 Added for Logout session clearing
+import 'login_screen.dart'; // 🚪 Added for Login Screen redirection
 
 class DashboardScreen extends StatefulWidget {
   final String userEmail;
@@ -27,6 +29,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<dynamic> _openPositions = [];
   bool _isLoadingPositions = true;
   Timer? _pollingTimer;
+
+  // 📜 ट्रेड लॉग्स के लिए स्टेट्स
+  List<dynamic> _tradeLogs = [];
+  bool _isLoadingTradeLogs = true;
+
+  // 📊 इक्विटी ग्रोथ चार्ट के लिए स्टेट्स (Dynamic Equity Curve)
+  List<FlSpot> _equitySpots = [const FlSpot(0, 200.0)]; // Fallback
+  bool _isLoadingChart = true;
 
   final String baseUrl = "https://bull-hunter-bot-gbhv9-5.onrender.com";
 
@@ -54,7 +64,60 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _checkBotInitialStatus(),
       _fetchWalletBalance(),
       _fetchOpenPositions(),
+      _fetchTradeLogs(),
+      _fetchEquityCurve(), // 👈 Dynamic Equity Curve API Integration
     ]);
+  }
+
+  // 📊 Dynamic Equity Curve Fetching from Backend
+  Future<void> _fetchEquityCurve() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/analytics/equity-curve?email=${widget.userEmail}'),
+      );
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        List<dynamic> points = data['equity_points'] ?? [];
+        if (points.isNotEmpty) {
+          List<FlSpot> loadedSpots = points.map((p) {
+            double x = (p['x'] as num).toDouble();
+            double y = (p['y'] as num).toDouble();
+            return FlSpot(x, y);
+          }).toList();
+
+          if (mounted) {
+            setState(() {
+              _equitySpots = loadedSpots;
+              _isLoadingChart = false;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoadingChart = false);
+    }
+  }
+
+  // 📜 Supabase से Live Trade Logs Fetch करने का फंक्शन
+  Future<void> _fetchTradeLogs() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/trade/logs?email=${widget.userEmail}'),
+      );
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (mounted) {
+          setState(() {
+            _tradeLogs = data['trades'] ?? [];
+            _isLoadingTradeLogs = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _isLoadingTradeLogs = false);
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoadingTradeLogs = false);
+    }
   }
 
   // 🔍 Initial Bot Status Fetching
@@ -207,7 +270,44 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  // 🛡️ Emergency PIN Verification Dialog Popup (Stage 4)
+  // 🚪 Logout Handling Function
+  Future<void> _handleLogout(BuildContext context) async {
+    bool confirm = await showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            backgroundColor: const Color(0xFF1E293B),
+            title: const Text('Logout Confirmation', style: TextStyle(color: Colors.white)),
+            content: const Text('Kya aap sach mein logout karna chahte hain?', style: TextStyle(color: Colors.white70)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Logout', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (confirm) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+
+      if (context.mounted) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (context) => const LoginScreen()),
+          (route) => false,
+        );
+      }
+    }
+  }
+
+  // 🛡️ Emergency PIN Verification Dialog Popup
   void _showEmergencyPinDialog() {
     final TextEditingController pinController = TextEditingController();
     bool isSubmittingPin = false;
@@ -291,7 +391,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             final data = jsonDecode(response.body);
 
                             if (!mounted) return;
-                            Navigator.pop(context); // Close dialog
+                            Navigator.pop(context);
 
                             if (response.statusCode == 200) {
                               setState(() {
@@ -390,7 +490,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // TAB 1: ANALYTICS (वॉलेट, लाइव पोजीशंस, इक्विटी चार्ट और परफॉरमेंस मेट्रिक्स)
+  // TAB 1: ANALYTICS (Featuring Live Unrealized PnL & Net Portfolio PnL distinction)
   Widget _buildAnalyticsTab() {
     if (_isLoadingMetrics && _isLoadingWallet) {
       return const Center(
@@ -408,7 +508,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           const SizedBox(height: 15),
 
-          // 💰 1. Live Wallet Balance & Current PnL Card
+          // 💰 1. Live Wallet Balance & Unrealized PnL Card
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
@@ -452,7 +552,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        const Text('Current PnL', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                        const Text('Live Unrealized PnL', style: TextStyle(color: Colors.white54, fontSize: 11)), // 👈 Explicitly marked Unrealized PnL
                         const SizedBox(height: 4),
                         Text(
                           '${_walletData['current_pnl'] ?? '+\$0.00'}',
@@ -472,7 +572,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
           const SizedBox(height: 20),
 
-          // 📈 2. Live Open Positions Card (स्टेज 2 का फीचर)
+          // 📈 2. Live Open Positions Card
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
@@ -585,7 +685,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
           const SizedBox(height: 20),
 
-          // 📊 3. Portfolio Equity Growth Chart Widget (स्टेज 3 का नया फीचर)
+          // 📊 3. Fully Dynamic Portfolio Equity Growth Chart Widget
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
@@ -615,59 +715,54 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const SizedBox(height: 20),
                 SizedBox(
                   height: 180,
-                  child: LineChart(
-                    LineChartData(
-                      gridData: FlGridData(
-                        show: true,
-                        drawVerticalLine: false,
-                        getDrawingHorizontalLine: (value) => FlLine(
-                          color: Colors.white10,
-                          strokeWidth: 1,
-                        ),
-                      ),
-                      titlesData: FlTitlesData(
-                        rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                        topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                        bottomTitles: const AxisTitles(
-                          sideTitles: SideTitles(showTitles: false),
-                        ),
-                        leftTitles: AxisTitles(
-                          sideTitles: SideTitles(
-                            showTitles: true,
-                            reservedSize: 40,
-                            getTitlesWidget: (value, meta) {
-                              return Text(
-                                '\$${value.toInt()}',
-                                style: const TextStyle(color: Colors.white54, fontSize: 10),
-                              );
-                            },
+                  child: _isLoadingChart
+                      ? const Center(child: CircularProgressIndicator(color: Colors.cyanAccent, strokeWidth: 2))
+                      : LineChart(
+                          LineChartData(
+                            gridData: FlGridData(
+                              show: true,
+                              drawVerticalLine: false,
+                              getDrawingHorizontalLine: (value) => const FlLine(
+                                color: Colors.white10,
+                                strokeWidth: 1,
+                              ),
+                            ),
+                            titlesData: FlTitlesData(
+                              rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                              topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                              bottomTitles: const AxisTitles(
+                                sideTitles: SideTitles(showTitles: false),
+                              ),
+                              leftTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 45,
+                                  getTitlesWidget: (value, meta) {
+                                    return Text(
+                                      '\$${value.toInt()}',
+                                      style: const TextStyle(color: Colors.white54, fontSize: 10),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ),
+                            borderData: FlBorderData(show: false),
+                            lineBarsData: [
+                              LineChartBarData(
+                                spots: _equitySpots, // 👈 Connected to live database/wallet equity curve points
+                                isCurved: true,
+                                color: Colors.cyanAccent,
+                                barWidth: 3,
+                                isStrokeCapRound: true,
+                                dotData: const FlDotData(show: false),
+                                belowBarData: BarAreaData(
+                                  show: true,
+                                  color: Colors.cyanAccent.withOpacity(0.15),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                      ),
-                      borderData: FlBorderData(show: false),
-                      lineBarsData: [
-                        LineChartBarData(
-                          spots: const [
-                            FlSpot(0, 200.0),
-                            FlSpot(1, 205.5),
-                            FlSpot(2, 203.0),
-                            FlSpot(3, 212.0),
-                            FlSpot(4, 218.5),
-                            FlSpot(5, 225.0),
-                          ],
-                          isCurved: true,
-                          color: Colors.cyanAccent,
-                          barWidth: 3,
-                          isStrokeCapRound: true,
-                          dotData: const FlDotData(show: false),
-                          belowBarData: BarAreaData(
-                            show: true,
-                            color: Colors.cyanAccent.withOpacity(0.15),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
                 ),
               ],
             ),
@@ -683,7 +778,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Row(
             children: [
               _metricCard(
-                'Net PnL',
+                'Net Portfolio PnL', // 👈 Explicitly marked Net Portfolio Realized PnL
                 '\$${_metrics['net_pnl'] ?? '0.0'}',
                 Colors.greenAccent,
               ),
@@ -716,7 +811,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // TAB 2: BOT CONTROL (Stage 4 Emergency Panic Button Integration ke sath)
+  // TAB 2: BOT CONTROL
   Widget _buildBotControlTab() {
     return Center(
       child: Padding(
@@ -769,13 +864,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             const SizedBox(height: 20),
             
-            // 🛑 EMERGENCY PANIC BUTTON (PIN Verification Protected - Stage 4)
+            // 🛑 EMERGENCY PANIC BUTTON
             SizedBox(
               width: double.infinity,
               height: 55,
               child: ElevatedButton.icon(
                 onPressed: _isLoadingControl ? null : _showEmergencyPinDialog,
                 icon: const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 24),
+                label: const Text(
+                  'EMERGENCY KILL SWITCH',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.1,
+                  ),
+                ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.red.shade900,
                   foregroundColor: Colors.white,
@@ -784,12 +887,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     side: const BorderSide(color: Colors.redAccent, width: 1.5),
                   ),
                 ),
-                child: const Text(
-                  'EMERGENCY KILL SWITCH',
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // 🚪 LOGOUT ACCOUNT BUTTON
+            SizedBox(
+              width: double.infinity,
+              height: 55,
+              child: ElevatedButton.icon(
+                onPressed: () => _handleLogout(context),
+                icon: const Icon(Icons.logout_rounded, color: Colors.white, size: 24),
+                label: const Text(
+                  'LOGOUT ACCOUNT',
                   style: TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 1.1,
+                  ),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.grey.shade800,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: const BorderSide(color: Colors.white24, width: 1.5),
                   ),
                 ),
               ),
@@ -800,12 +923,93 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // TAB 3: TRADE LOGS
+  // TAB 3: TRADE LOGS (Fully Dynamic Supabase Integration)
   Widget _buildTradeLogsTab() {
-    return const Center(
-      child: Text(
-        'Recent trades data will appear here...',
-        style: TextStyle(color: Colors.white54),
+    if (_isLoadingTradeLogs) {
+      return const Center(
+        child: CircularProgressIndicator(color: Colors.cyanAccent),
+      );
+    }
+
+    if (_tradeLogs.isEmpty) {
+      return const Center(
+        child: Text(
+          'No trade history found yet.',
+          style: TextStyle(color: Colors.white54, fontSize: 13),
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      color: Colors.cyanAccent,
+      backgroundColor: const Color(0xFF1E293B),
+      onRefresh: _fetchTradeLogs,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: _tradeLogs.length,
+        itemBuilder: (context, index) {
+          final trade = _tradeLogs[index];
+          final side = trade['side'] ?? 'BUY';
+          final isBuy = side.toString().toUpperCase() == 'BUY';
+          final pnl = trade['pnl'] ?? 0.0;
+          final pnlColor = pnl >= 0 ? Colors.greenAccent : Colors.redAccent;
+          
+          String formattedTime = '';
+          try {
+            final dt = DateTime.parse(trade['executed_at']).toLocal();
+            formattedTime = "${dt.day}/${dt.month}/${dt.year} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}";
+          } catch (_) {
+            formattedTime = trade['executed_at'] ?? '';
+          }
+
+          return Container(
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      trade['symbol'] ?? 'UNKNOWN',
+                      style: const TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$side | Qty: ${trade['quantity']}',
+                      style: TextStyle(color: isBuy ? Colors.greenAccent : Colors.orangeAccent, fontSize: 11),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      formattedTime,
+                      style: const TextStyle(color: Colors.white38, fontSize: 10),
+                    ),
+                  ],
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      'PnL: \$${pnl.toStringAsFixed(2)}',
+                      style: TextStyle(color: pnlColor, fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Entry: ${trade['entry_price']} | Exit: ${trade['exit_price']}',
+                      style: const TextStyle(color: Colors.white60, fontSize: 10),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }

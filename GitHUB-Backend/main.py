@@ -22,7 +22,7 @@ from trading_engine import DynamicBullHunterEngine
 # FastAPI App Initialization
 app = FastAPI(
     title="CDX Bull Hunter - Master SaaS Engine",
-    version="9.7.0"
+    version="9.8.0"
 )
 
 # CORS Tolerance (Flutter Web/Cross-platform access ke liye)
@@ -181,7 +181,7 @@ class SoundSettingsRequest(BaseModel):
 def health_check():
     return {
         "status": "online",
-        "engine": "CDX Bull Hunter - Master SaaS Engine Level 9.7.0",
+        "engine": "CDX Bull Hunter - Master SaaS Engine Level 9.8.0",
         "active_users_running": len(active_bot_instances)
     }
 
@@ -205,7 +205,6 @@ async def websocket_bot_status(websocket: WebSocket, email: str):
         if clean_email in active_connections:
             del active_connections[clean_email]
 
-# 🔍 NEWLY ADDED CHECK-STATUS ENDPOINT (Fixes 404 Error)
 @app.get("/api/auth/check-status")
 def check_user_status(email: str = Query(...)):
     clean_email = email.strip().lower()
@@ -331,7 +330,7 @@ def verify_app_pin(data: VerifyPinRequest):
     try:
         res = supabase.table("user_bot_profiles").select("app_pin_hash, failed_pin_attempts, pin_locked_until").eq("email", email).execute()
         if not res.data or not res.data[0].get("app_pin_hash"):
-            raise HTTPException(status_code=404, detail="PIN set nahi hai. Kripya OTP से login karein.")
+            raise HTTPException(status_code=404, detail="PIN set nahi hai. Kripya OTP se login karein.")
         
         user_record = res.data[0]
         locked_until = user_record.get("pin_locked_until")
@@ -659,6 +658,60 @@ async def get_wallet_balance(email: str = Query(...)):
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Wallet sync error: {str(e)}")
+
+@app.get("/api/trade/logs")
+def get_trade_logs(email: str = Query(...)):
+    clean_email = email.strip().lower()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured.")
+    try:
+        res = supabase.table("trade_logs").select("*").eq("email", clean_email).order("executed_at", desc=True).limit(50).execute()
+        trades = res.data or []
+        return {"status": "success", "trades": trades}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch trade logs: {str(e)}")
+
+# 📈 NEW ADDITION: Dynamic Equity Curve Endpoint (Based on User's Last Known Balance & Trades)
+@app.get("/api/analytics/equity-curve")
+def get_equity_curve(email: str = Query(...)):
+    clean_email = email.strip().lower()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured.")
+    
+    try:
+        profile_res = supabase.table("user_bot_profiles").select("last_known_balance").eq("email", clean_email).execute()
+        current_balance = 200.0
+        if profile_res.data and profile_res.data[0].get("last_known_balance") is not None:
+            current_balance = float(profile_res.data[0].get("last_known_balance"))
+
+        trades_res = supabase.table("trade_logs").select("pnl, executed_at").eq("email", clean_email).order("executed_at", desc=False).execute()
+        trades = trades_res.data or []
+
+        if not trades:
+            return {
+                "status": "success",
+                "equity_points": [{"x": 0, "y": round(current_balance, 2)}]
+            }
+
+        total_historical_pnl = sum(float(t.get("pnl", 0.0)) for t in trades)
+        starting_balance = current_balance - total_historical_pnl
+        if starting_balance <= 0:
+            starting_balance = 200.0
+
+        equity_points = [{"x": 0, "y": round(starting_balance, 2)}]
+        running_equity = starting_balance
+
+        for i, trade in enumerate(trades, start=1):
+            pnl = float(trade.get("pnl", 0.0))
+            running_equity += pnl
+            equity_points.append({"x": i, "y": round(running_equity, 2)})
+
+        return {
+            "status": "success",
+            "equity_points": equity_points
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate equity curve: {str(e)}")
 
 @app.get("/api/analytics/summary")
 def get_analytics_summary(email: str = None):
