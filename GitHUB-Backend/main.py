@@ -35,7 +35,7 @@ app.add_middleware(
 )
 
 # ------------------------------------------------------------------------------
-# 🔑 ENVIRONMENT & SUPABASE SETUP
+# ENVIRONMENT & SUPABASE SETUP
 # ------------------------------------------------------------------------------
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
@@ -50,7 +50,7 @@ active_bot_threads: dict[str, threading.Thread] = {}
 active_connections: dict[str, WebSocket] = {}
 
 # ------------------------------------------------------------------------------
-# 🛡️ HELPER FUNCTIONS (ENCRYPTION & METRICS)
+# HELPER FUNCTIONS (ENCRYPTION & METRICS)
 # ------------------------------------------------------------------------------
 def encrypt_val(value: str) -> str:
     if not value:
@@ -63,7 +63,7 @@ def decrypt_val(encrypted_value: str) -> str:
     try:
         return cipher.decrypt(encrypted_value.encode()).decode()
     except Exception:
-        return encrypted_value  # Fallback if unencrypted
+        return encrypted_value
 
 def calculate_performance_metrics(trades_list: list, initial_balance: float = 200.0) -> dict:
     if not trades_list:
@@ -109,7 +109,7 @@ def calculate_performance_metrics(trades_list: list, initial_balance: float = 20
     }
 
 # ------------------------------------------------------------------------------
-# 📧 REAL EMAIL SMTP DISPATCHER FUNCTION
+# REAL EMAIL SMTP DISPATCHER FUNCTION
 # ------------------------------------------------------------------------------
 def send_email_otp_smtp(to_email: str, otp: str):
     sender_email = os.getenv("SMTP_EMAIL", "")
@@ -135,7 +135,7 @@ def send_email_otp_smtp(to_email: str, otp: str):
         return False
 
 # ------------------------------------------------------------------------------
-# 📦 REQUEST MODELS
+# REQUEST MODELS
 # ------------------------------------------------------------------------------
 class UserRegistrationRequest(BaseModel):
     full_name: str
@@ -148,7 +148,7 @@ class UserRegistrationRequest(BaseModel):
 
 class BotControlRequest(BaseModel):
     email: str
-    action: str  # "start" ya "stop"
+    action: str
 
 class SendOTPRequest(BaseModel):
     email: str
@@ -174,18 +174,17 @@ class SoundSettingsRequest(BaseModel):
     sound_enabled: bool
 
 # ------------------------------------------------------------------------------
-# 🚀 API ENDPOINTS & WEBSOCKET
+# API ENDPOINTS & WEBSOCKET
 # ------------------------------------------------------------------------------
 
 @app.get("/")
 def health_check():
     return {
         "status": "online",
-        "engine": "CDX Bull Hunter - Master SaaS Engine Level 9.7.0 (Stage 1-5 Complete & Locked)",
+        "engine": "CDX Bull Hunter - Master SaaS Engine Level 9.7.0",
         "active_users_running": len(active_bot_instances)
     }
 
-# 1️⃣ WebSocket Real-time Endpoint
 @app.websocket("/ws/bot-status/{email}")
 async def websocket_bot_status(websocket: WebSocket, email: str):
     await websocket.accept()
@@ -206,7 +205,30 @@ async def websocket_bot_status(websocket: WebSocket, email: str):
         if clean_email in active_connections:
             del active_connections[clean_email]
 
-# 2️⃣ OTP Send Endpoint
+# 🔍 NEWLY ADDED CHECK-STATUS ENDPOINT (Fixes 404 Error)
+@app.get("/api/auth/check-status")
+def check_user_status(email: str = Query(...)):
+    clean_email = email.strip().lower()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database connection not initialized.")
+    
+    is_registered = False
+    has_pin = False
+    try:
+        profile_res = supabase.table("user_bot_profiles").select("email, app_pin_hash, coindcx_status").eq("email", clean_email).execute()
+        if profile_res.data and len(profile_res.data) > 0:
+            is_registered = True
+            if profile_res.data[0].get("app_pin_hash"):
+                has_pin = True
+    except Exception as e:
+        print(f"Database lookup error: {str(e)}")
+        
+    return {
+        "status": "success",
+        "is_registered": is_registered,
+        "has_pin": has_pin
+    }
+
 @app.post("/api/auth/send-otp")
 def send_otp_endpoint(data: SendOTPRequest):
     email = data.email.strip().lower()
@@ -235,7 +257,6 @@ def send_otp_endpoint(data: SendOTPRequest):
         "debug_otp": otp
     }
 
-# 3️⃣ OTP Verify Endpoint
 @app.post("/api/auth/verify-otp")
 def verify_otp_endpoint(data: VerifyOTPRequest):
     email = data.email.strip().lower()
@@ -277,7 +298,6 @@ def verify_otp_endpoint(data: VerifyOTPRequest):
         "has_pin": has_pin
     }
 
-# 4️⃣ Set App PIN Endpoint
 @app.post("/api/auth/set-pin")
 def set_app_pin(data: SetPinRequest):
     email = data.email.strip().lower()
@@ -300,7 +320,6 @@ def set_app_pin(data: SetPinRequest):
     else:
         raise HTTPException(status_code=500, detail="Database connection error.")
 
-# 5️⃣ Verify App PIN Endpoint
 @app.post("/api/auth/verify-pin")
 def verify_app_pin(data: VerifyPinRequest):
     email = data.email.strip().lower()
@@ -312,7 +331,7 @@ def verify_app_pin(data: VerifyPinRequest):
     try:
         res = supabase.table("user_bot_profiles").select("app_pin_hash, failed_pin_attempts, pin_locked_until").eq("email", email).execute()
         if not res.data or not res.data[0].get("app_pin_hash"):
-            raise HTTPException(status_code=404, detail="PIN set nahi hai. Kripya OTP se login karein.")
+            raise HTTPException(status_code=404, detail="PIN set nahi hai. Kripya OTP से login karein.")
         
         user_record = res.data[0]
         locked_until = user_record.get("pin_locked_until")
@@ -361,7 +380,6 @@ def verify_app_pin(data: VerifyPinRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 6️⃣ User Registration
 @app.post("/api/user/register")
 def register_user_credentials(data: UserRegistrationRequest):
     if not supabase:
@@ -407,7 +425,6 @@ def register_user_credentials(data: UserRegistrationRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
-# 7️⃣ Bot Execution Control
 @app.post("/api/bot/control")
 def control_user_bot(data: BotControlRequest):
     email = data.email.strip().lower()
@@ -475,7 +492,6 @@ def control_user_bot(data: BotControlRequest):
     else:
         raise HTTPException(status_code=400, detail="Invalid action. Use 'start' or 'stop'.")
 
-# 🛑 7.1 Emergency Kill Switch Endpoint (PIN-Protected)
 @app.post("/api/bot/emergency-stop")
 def emergency_stop_bot(data: EmergencyStopRequest):
     email = data.email.strip().lower()
@@ -503,14 +519,13 @@ def emergency_stop_bot(data: EmergencyStopRequest):
 
         return {
             "status": "success", 
-            "message": "⚠️ EMERGENCY KILL SWITCH TRIGGERED! Bot successfully halted and positions secured."
+            "message": "EMERGENCY KILL SWITCH TRIGGERED! Bot successfully halted and positions secured."
         }
     except HTTPException as he:
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 🔊 7.2 Sound Settings Endpoints (Stage 5)
 @app.post("/api/settings/sound-toggle")
 def update_sound_settings(data: SoundSettingsRequest):
     email = data.email.strip().lower()
@@ -546,7 +561,6 @@ def get_sound_settings(email: str):
     except Exception as e:
         return {"status": "success", "sound_alerts_enabled": True}
 
-# 8️⃣ Bot Status & Live Positions Endpoint
 @app.get("/api/bot/status")
 def get_bot_status(email: str):
     clean_email = email.strip().lower()
@@ -566,17 +580,17 @@ def get_bot_status(email: str):
             except Exception as e:
                 print(f"Error saving last known balance: {str(e)}")
 
-        with engine.state_lock:
-            for sym, st in engine.states.items():
-                if st['position'] is not None:
-                    active_positions.append({
-                        "symbol": sym,
-                        "position": st['position'],
-                        "entry_price": st['entry_price'],
-                        "current_price": st['last_price'],
-                        "size": st['position_size'],
-                        "pnl": round((st['last_price'] - st['entry_price']) * st['position_size'] if st['position'] == 'BUY' else (st['entry_price'] - st['last_price']) * st['position_size'], 2)
-                    })
+            with engine.state_lock:
+                for sym, st in engine.states.items():
+                    if st['position'] is not None:
+                        active_positions.append({
+                            "symbol": sym,
+                            "position": st['position'],
+                            "entry_price": st['entry_price'],
+                            "current_price": st['last_price'],
+                            "size": st['position_size'],
+                            "pnl": round((st['last_price'] - st['entry_price']) * st['position_size'] if st['position'] == 'BUY' else (st['entry_price'] - st['last_price']) * st['position_size'], 2)
+                        })
 
     return {
         "status": "success",
@@ -585,7 +599,6 @@ def get_bot_status(email: str):
         "active_positions": active_positions
     }
 
-# 9️⃣ Master Engine & Supabase Last Known Balance Fallback Endpoint
 @app.get("/api/wallet/balance")
 async def get_wallet_balance(email: str = Query(...)):
     clean_email = email.strip().lower()
@@ -647,7 +660,6 @@ async def get_wallet_balance(email: str = Query(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Wallet sync error: {str(e)}")
 
-# 🔟 Analytics Summary Endpoint
 @app.get("/api/analytics/summary")
 def get_analytics_summary(email: str = None):
     if not supabase:
